@@ -1271,8 +1271,8 @@ void RawDataProduct::subscribe() {
   // Subscribe to RXM Raw
   nh->param("publish/rxm/raw", enabled["rxm_raw"], enabled["rxm"]);
   if (enabled["rxm_raw"])
-    gps.subscribe<ublox_msgs::RxmRAW>(boost::bind(
-        publish<ublox_msgs::RxmRAW>, _1, "rxmraw"), kSubscribeRate);
+    gps.subscribe<ublox_msgs::RxmRAWX>(boost::bind(
+        publish<ublox_msgs::RxmRAWX>, _1, "rxmraw"), kSubscribeRate);
 
   // Subscribe to RXM SFRB
   nh->param("publish/rxm/sfrb", enabled["rxm_sfrb"], enabled["rxm"]);
