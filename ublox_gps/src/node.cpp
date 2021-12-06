@@ -124,7 +124,8 @@ void UbloxNode::addProductInterface(std::string product_category,
   else if (product_category.compare("TIM") == 0)
     components_.push_back(ComponentPtr(new TimProduct));
   else if (product_category.compare("ADR") == 0 ||
-           product_category.compare("UDR") == 0)
+           product_category.compare("UDR") == 0 ||
+           product_category.compare("HPS") == 0) // Bloomfield-specific
     components_.push_back(ComponentPtr(new AdrUdrProduct(protocol_version_)));
   else if (product_category.compare("FTS") == 0)
     components_.push_back(ComponentPtr(new FtsProduct));
@@ -389,7 +390,15 @@ void UbloxNode::processMonVer() {
   if (protocol_version_ == 0)
     ROS_WARN("Failed to parse MonVER and determine protocol version. %s",
              "Defaulting to firmware version 6.");
+
+  // Add interfaces for firmware-specific configuration
   addFirmwareInterface();
+
+  // Include raw data product if protocol is compatible AND specified in params
+  if (protocol_version_ > 15) {
+    if (nh->param("raw_data", false))
+      components_.push_back(ComponentPtr(new RawDataProduct));
+  }
 
   if(protocol_version_ < 18) {
     // Final line contains supported GNSS delimited by ;
@@ -564,13 +573,13 @@ void UbloxNode::initializeIo() {
 void UbloxNode::initialize() {
   // Params must be set before initializing IO
   getRosParams();
+
   initializeIo();
+
   // Must process Mon VER before setting firmware/hardware params
+  // This parses protocol version to add compatible components
   processMonVer();
-  if(protocol_version_ <= 14) {
-    if(nh->param("raw_data", false))
-      components_.push_back(ComponentPtr(new RawDataProduct));
-  }
+
   // Must set firmware & hardware params before initializing diagnostics
   for (int i = 0; i < components_.size(); i++)
     components_[i]->getRosParams();
@@ -1402,9 +1411,6 @@ void AdrUdrProduct::callbackEsfMEAS(const ublox_msgs::EsfMEAS &m) {
           imu_.linear_acceleration.z = data_value * m_per_sec_sq;
       } else if (data_type == 12) {
         //ROS_INFO("Temperature in celsius: %f", data_value * deg_c); 
-      } else {
-        ROS_INFO("data_type: %u", data_type);
-        ROS_INFO("data_value: %u", data_value);
       }
 
       // create time ref message and put in the data
