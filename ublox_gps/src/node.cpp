@@ -28,6 +28,7 @@
 //==============================================================================
 
 #include "ublox_gps/node.h"
+#include "std_msgs/String.h"
 #include <cmath>
 #include <string>
 #include <sstream>
@@ -611,7 +612,19 @@ void UbloxNode::initialize() {
                              &UbloxNode::pollMessages,
                              this);
     poller.start();
-    ros::spin();
+
+    std_msgs::String beat;
+    beat.data = "gps_node";
+    ros::Rate loop_rate(1);
+    ros::Publisher heartbeat = nh->advertise<std_msgs::String>("/heartbeat", 1000);
+
+    while (ros::ok()) {
+      heartbeat.publish(beat);
+      ros::spinOnce();
+      loop_rate.sleep();
+    }
+  } else {
+    ROS_WARN("Could not configure UBlox device %s!", device_.c_str());
   }
   shutdown();
 }
@@ -620,6 +633,8 @@ void UbloxNode::shutdown() {
   if (gps.isInitialized()) {
     gps.close();
     ROS_INFO("Closed connection to %s.", device_.c_str());
+  } else {
+    ROS_WARN("Could not initialize device %s!", device_.c_str());
   }
 }
 
@@ -1267,6 +1282,12 @@ void UbloxFirmware8::subscribe() {
   if (enabled["rxm_rtcm"])
     gps.subscribe<ublox_msgs::RxmRTCM>(boost::bind(
         publish<ublox_msgs::RxmRTCM>, _1, "rxmrtcm"), kSubscribeRate);
+
+   // Subscribe to RawX messages
+   nh->param("publish/rxm/raw", enabled["rxm_raw"], enabled["rxm"]);
+   if (enabled["rxm_raw"])
+     gps.subscribe<ublox_msgs::RxmRAWX>(boost::bind(
+        publish<ublox_msgs::RxmRAWX>, _1, "rxmraw"), kSubscribeRate);
 }
 
 //
@@ -1915,6 +1936,7 @@ int main(int argc, char** argv) {
   ros::init(argc, argv, "ublox_gps");
   nh.reset(new ros::NodeHandle("~"));
   ros::Subscriber subRtcm = nh->subscribe("/rtcm", 10, rtcmCallback);
+
   nh->param("debug", ublox_gps::debug, 1);
   if(ublox_gps::debug) {
     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME,
@@ -1922,6 +1944,8 @@ int main(int argc, char** argv) {
      ros::console::notifyLoggerLevelsChanged();
 
   }
+
   UbloxNode node;
+
   return 0;
 }
