@@ -125,6 +125,7 @@ void UbloxNode::addProductInterface(std::string product_category,
     components_.push_back(ComponentPtr(new TimProduct));
   else if (product_category.compare("ADR") == 0 ||
            product_category.compare("UDR") == 0 ||
+           product_category.compare("LAP") == 0 ||
            product_category.compare("HPS") == 0) // Bloomfield-specific
     components_.push_back(ComponentPtr(new AdrUdrProduct(protocol_version_)));
   else if (product_category.compare("FTS") == 0)
@@ -132,7 +133,7 @@ void UbloxNode::addProductInterface(std::string product_category,
   else if(product_category.compare("SPG") != 0)
     ROS_WARN("Product category %s %s from MonVER message not recognized %s",
              product_category.c_str(), ref_rov.c_str(),
-             "options are HPG REF, HPG ROV, HPG #.#, HDG #.#, TIM, ADR, UDR, FTS, SPG");
+             "options are HPG REF, HPG ROV, HPG #.#, HDG #.#, TIM, ADR, UDR, LAP, FTS, SPG");
 }
 
 void UbloxNode::getRosParams() {
@@ -288,6 +289,10 @@ void UbloxNode::subscribe() {
   if (enabled["nav_clock"])
     gps.subscribe<ublox_msgs::NavCLOCK>(boost::bind(
         publish<ublox_msgs::NavCLOCK>, _1, "navclock"), kSubscribeRate);
+
+  nh->param("publish/nmea", enabled["nmea"], false);
+  if (enabled["nmea"])
+    gps.subscribe_nmea(boost::bind(publish_nmea, _1, "nmea"));
 
   // INF messages
   nh->param("inf/debug", enabled["inf_debug"], false);
@@ -1136,8 +1141,11 @@ void UbloxFirmware8::getRosParams() {
 
     std::vector<uint8_t> bdsTalkerId;
     getRosUint("nmea/bds_talker_id", bdsTalkerId);
-    cfg_nmea_.bdsTalkerId[0] = bdsTalkerId[0];
-    cfg_nmea_.bdsTalkerId[1] = bdsTalkerId[1];
+    if(bdsTalkerId.size() >= 2) {
+      cfg_nmea_.bdsTalkerId[0] = bdsTalkerId[0];
+      cfg_nmea_.bdsTalkerId[1] = bdsTalkerId[1];
+    }
+
   }
 }
 
@@ -1339,6 +1347,12 @@ void AdrUdrProduct::subscribe() {
     gps.subscribe<ublox_msgs::NavATT>(boost::bind(
         publish<ublox_msgs::NavATT>, _1, "navatt"), kSubscribeRate);
 
+  // Subscribe to ESF ALG messages
+  nh->param("publish/esf/alg", enabled["esf_alg"], enabled["esf"]);
+  if (enabled["esf_alg"])
+    gps.subscribe<ublox_msgs::EsfALG>(boost::bind(
+        publish<ublox_msgs::EsfALG>, _1, "esfalg"), kSubscribeRate);
+
   // Subscribe to ESF INS messages
   nh->param("publish/esf/ins", enabled["esf_ins"], enabled["esf"]);
   if (enabled["esf_ins"])
@@ -1383,7 +1397,7 @@ void AdrUdrProduct::callbackEsfMEAS(const ublox_msgs::EsfMEAS &m) {
     imu_.header.stamp = ros::Time::now();
     imu_.header.frame_id = frame_id;
     
-    static const float deg_per_sec = pow(2, -12);
+    static const float rad_per_sec = pow(2, -12) * M_PI / 180.0F;
     static const float m_per_sec_sq = pow(2, -10);
     static const float deg_c = 1e-2;
      
@@ -1398,19 +1412,22 @@ void AdrUdrProduct::callbackEsfMEAS(const ublox_msgs::EsfMEAS &m) {
       imu_.angular_velocity_covariance[0] = -1;
 
       if (data_type == 14) {
-          imu_.angular_velocity.x = data_value * deg_per_sec;
+          imu_.angular_velocity.x = data_value * rad_per_sec;
       } else if (data_type == 16) {
           imu_.linear_acceleration.x = data_value * m_per_sec_sq;
       } else if (data_type == 13) {
-          imu_.angular_velocity.y = data_value * deg_per_sec;
+          imu_.angular_velocity.y = data_value * rad_per_sec;
       } else if (data_type == 17) {
           imu_.linear_acceleration.y = data_value * m_per_sec_sq;
       } else if (data_type == 5) {
-          imu_.angular_velocity.z = data_value * deg_per_sec;
+          imu_.angular_velocity.z = data_value * rad_per_sec;
       } else if (data_type == 18) {
           imu_.linear_acceleration.z = data_value * m_per_sec_sq;
       } else if (data_type == 12) {
         //ROS_INFO("Temperature in celsius: %f", data_value * deg_c); 
+      } else {
+        // ROS_INFO("data_type: %u", data_type);
+        // ROS_INFO("data_value: %u", data_value);
       }
 
       // create time ref message and put in the data
@@ -1662,7 +1679,7 @@ void HpgRovProduct::initializeRosDiagnostics() {
 void HpgRovProduct::carrierPhaseDiagnostics(
     diagnostic_updater::DiagnosticStatusWrapper& stat) {
   uint32_t carr_soln = last_rel_pos_.flags & last_rel_pos_.FLAGS_CARR_SOLN_MASK;
-  stat.add("iTow", last_rel_pos_.iTow);
+  stat.add("iTOW", last_rel_pos_.iTOW);
   if (carr_soln & last_rel_pos_.FLAGS_CARR_SOLN_NONE ||
       !(last_rel_pos_.flags & last_rel_pos_.FLAGS_DIFF_SOLN &&
         last_rel_pos_.flags & last_rel_pos_.FLAGS_REL_POS_VALID)) {
@@ -1792,8 +1809,7 @@ void HpPosRecProduct::callbackNavRelPosNed(const ublox_msgs::NavRELPOSNED9 &m) {
     imu_.angular_velocity_covariance[0] = -1;
 
     // Transform angle since ublox is representing heading as NED but ROS uses ENU as convention (REP-103).
-    // Also convert the base-to-rover angle to a robot-to-base angle (consistent with frame_id)
-    double heading = - (static_cast<double>(m.relPosHeading) * 1e-5 / 180.0 * M_PI) - M_PI_2;
+    double heading = M_PI_2 - (static_cast<double>(m.relPosHeading) * 1e-5 / 180.0 * M_PI);
     tf::Quaternion orientation;
     orientation.setRPY(0, 0, heading);
     imu_.orientation.x = orientation[0];
